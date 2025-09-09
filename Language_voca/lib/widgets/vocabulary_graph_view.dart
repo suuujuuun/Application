@@ -701,51 +701,22 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
   }
   
   void _centerCameraOnNodes() {
-    if (_nodes.isEmpty || _initialCameraSet) return;
-    
-    // 모든 노드의 중심점 계산
-    double minX = double.infinity;
-    double maxX = double.negativeInfinity;
-    double minY = double.infinity;
-    double maxY = double.negativeInfinity;
-    
-    for (final node in _nodes.values) {
-      minX = min(minX, node.x);
-      maxX = max(maxX, node.x);
-      minY = min(minY, node.y);
-      maxY = max(maxY, node.y);
-    }
-    
-    // 노드들의 중심점 계산
-    final centerX = (minX + maxX) / 2;
-    final centerY = (minY + maxY) / 2;
-    
-    // 캔버스의 중심점 계산
-    final canvasSize = _canvasSize;
-    final canvasCenterX = canvasSize / 2;
-    final canvasCenterY = canvasSize / 2;
-    
-    // 노드 중심점이 화면 중앙에 오도록 변환 행렬 계산
-    final translateX = canvasCenterX - (centerX + canvasCenterX);
-    final translateY = canvasCenterY - (centerY + canvasCenterY);
-    
-    // 노드들의 범위에 따라 적절한 스케일 계산
-    final nodesWidth = maxX - minX;
-    final nodesHeight = maxY - minY;
-    final maxDimension = max(nodesWidth, nodesHeight);
-    
-    // 화면 크기를 고려한 적절한 스케일 계산 (여백 포함)
-    double scale = 1.0;
-    if (maxDimension > 0) {
-      final viewportSize = min(MediaQuery.of(context).size.width, MediaQuery.of(context).size.height) * 0.8;
-      scale = (viewportSize / maxDimension).clamp(0.1, 2.0);
-    }
-    
-    // 변환 행렬 적용
+    if (!mounted || _initialCameraSet) return;
+
+    // 뷰포트의 중심을 가져옴
+    final RenderBox? renderBox = context.findRenderObject() as RenderBox?;
+    if (renderBox == null || !renderBox.hasSize) return;
+    final viewSize = renderBox.size;
+    final viewCenterX = viewSize.width / 2;
+    final viewCenterY = viewSize.height / 2;
+
+    // 캔버스 중심 (노드 좌표계의 0,0)을 뷰포트 중심으로 이동
+    final canvasCenterX = _canvasSize / 2;
+    final canvasCenterY = _canvasSize / 2;
+
     final matrix = Matrix4.identity()
-      ..translate(translateX, translateY)
-      ..scale(scale);
-    
+      ..translate(viewCenterX - canvasCenterX, viewCenterY - canvasCenterY);
+
     _transformationController.value = matrix;
     _initialCameraSet = true;
   }
