@@ -6,6 +6,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firebase_options.dart';
 
 import 'language_detail_screen.dart';
+import 'medical_vocabulary_screen.dart';
+import 'expression_screen.dart'; // New import
+import 'phrasal_verb_screen.dart'; // New import
 import 'screens/article_list_screen.dart';
 import 'screens/article_detail_screen.dart';
 import 'screens/add_article_screen.dart';
@@ -58,6 +61,42 @@ final GoRouter _router = GoRouter(
                   },
                 ),
               ],
+            ),
+            // Medical Vocabulary Screen under language route
+            GoRoute(
+              path: 'medical',
+              builder: (BuildContext context, GoRouterState state) {
+                final String language = state.pathParameters['lang']!;
+                // Only available for English
+                if (language != 'English') {
+                  return LanguageDetailScreen(language: language);
+                }
+                return const MedicalVocabularyScreen(collectionName: 'Med_voca');
+              },
+            ),
+            // Expression Screen under language route
+            GoRoute(
+              path: 'expression',
+              builder: (BuildContext context, GoRouterState state) {
+                final String language = state.pathParameters['lang']!;
+                // Only available for English
+                if (language != 'English') {
+                  return LanguageDetailScreen(language: language);
+                }
+                return const ExpressionScreen(collectionName: 'expression');
+              },
+            ),
+            // Phrasal Verb Screen under language route
+            GoRoute(
+              path: 'phrasal_verb',
+              builder: (BuildContext context, GoRouterState state) {
+                final String language = state.pathParameters['lang']!;
+                // Only available for English
+                if (language != 'English') {
+                  return LanguageDetailScreen(language: language);
+                }
+                return const PhrasalVerbScreen(collectionName: 'phrasal_verb');
+              },
             ),
           ],
         ),
@@ -287,7 +326,7 @@ class _FolderScreenState extends State<FolderScreen> {
                         height: 220,
                         decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade200), borderRadius: BorderRadius.circular(8)),
                         child: StreamBuilder<QuerySnapshot>(
-                          stream: FirebaseFirestore.instance.collection('guestbook').orderBy('timestamp', descending: true).snapshots(),
+                          stream: FirebaseFirestore.instance.collection('guestbook').orderBy('timestamp', descending: true).limit(20).snapshots(),  // 최근 20개만
                           builder: (context, snapshot) {
                             if (snapshot.connectionState == ConnectionState.waiting) {
                               return const Center(child: CircularProgressIndicator());
@@ -304,7 +343,27 @@ class _FolderScreenState extends State<FolderScreen> {
                                 final data = doc.data() as Map<String, dynamic>;
                                 final name = data['name'] ?? 'No Name';
                                 final message = data['message'] ?? 'No Message';
-                                final languages = (data['languages'] as List<dynamic>? ?? []).join(', ');
+                                
+                                // 더 안전한 languages 처리
+                                String languages = '';
+                                try {
+                                  final langData = data['languages'];
+                                  if (langData == null) {
+                                    languages = 'No languages specified';
+                                  } else if (langData is List) {
+                                    // List인 경우 - 정상적인 경우
+                                    languages = langData.map((e) => e.toString()).join(', ');
+                                  } else if (langData is String) {
+                                    // String인 경우 - 단일 언어
+                                    languages = langData;
+                                  } else {
+                                    // 기타 타입
+                                    languages = langData.toString();
+                                  }
+                                } catch (e) {
+                                  // 오류 발생 시 기본값
+                                  languages = 'No languages specified';
+                                }
 
                                 return Card(
                                   margin: const EdgeInsets.only(bottom: 6),

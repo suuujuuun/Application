@@ -43,6 +43,7 @@ class ArticleListScreen extends StatelessWidget {
             .doc(language)
             .collection('articles')
             .orderBy('timestamp', descending: true)
+            .limit(50)  // 50개로 제한
             .snapshots(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {

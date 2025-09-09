@@ -2,20 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'widgets/articles_drawer.dart';
+import 'widgets/articles_drawer.dart'; // Keep if needed for other functionality, otherwise remove
 import 'widgets/vocabulary_graph_view.dart';
 import 'dart:math';
 
-class LanguageDetailScreen extends StatefulWidget {
-  final String language;
-  final String? collectionName;
-  const LanguageDetailScreen({super.key, required this.language, this.collectionName});
+class MedicalVocabularyScreen extends StatefulWidget {
+  final String? collectionName; // New parameter
+  const MedicalVocabularyScreen({super.key, this.collectionName}); // Updated constructor
 
   @override
-  State<LanguageDetailScreen> createState() => _LanguageDetailScreenState();
+  State<MedicalVocabularyScreen> createState() => _MedicalVocabularyScreenState();
 }
 
-class _LanguageDetailScreenState extends State<LanguageDetailScreen> {
+class _MedicalVocabularyScreenState extends State<MedicalVocabularyScreen> {
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   late CollectionReference _vocabularyCollection;
 
@@ -29,7 +28,8 @@ class _LanguageDetailScreenState extends State<LanguageDetailScreen> {
   @override
   void initState() {
     super.initState();
-    _vocabularyCollection = FirebaseFirestore.instance.collection('languages').doc(widget.language).collection(widget.collectionName ?? 'vocabulary');
+    // Med_voca를 최상위 컬렉션으로 변경
+    _vocabularyCollection = FirebaseFirestore.instance.collection(widget.collectionName ?? 'Med_voca');
     _searchController.addListener(() {
       setState(() {
         _searchQuery = _searchController.text;
@@ -43,15 +43,6 @@ class _LanguageDetailScreenState extends State<LanguageDetailScreen> {
     _wordController.dispose();
     _definitionController.dispose();
     super.dispose();
-  }
-
-  @override
-  void didUpdateWidget(LanguageDetailScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.language != oldWidget.language || widget.collectionName != oldWidget.collectionName) {
-       _vocabularyCollection = FirebaseFirestore.instance.collection('languages').doc(widget.language).collection(widget.collectionName ?? 'vocabulary');
-       setState((){});
-    }
   }
 
   Future<void> _addVocabulary() async {
@@ -96,8 +87,8 @@ class _LanguageDetailScreenState extends State<LanguageDetailScreen> {
     return Scaffold(
       key: _scaffoldKey,
       appBar: AppBar(
-        backgroundColor: _isSearchActive ? Colors.white : null,
-        foregroundColor: _isSearchActive ? Colors.black : null,
+        backgroundColor: _isSearchActive ? Colors.white : null, // 검색 중일 때 흰색 배경
+        foregroundColor: _isSearchActive ? Colors.black : null, // 검색 중일 때 검은 아이콘
         title: _isSearchActive
             ? TextField(
                 controller: _searchController,
@@ -106,48 +97,15 @@ class _LanguageDetailScreenState extends State<LanguageDetailScreen> {
                   hintStyle: TextStyle(color: Colors.grey),
                   border: InputBorder.none,
                 ),
-                style: TextStyle(color: Colors.black, fontSize: 16),
+                style: TextStyle(color: Colors.black, fontSize: 16), // 검은색 텍스트
                 autofocus: true,
               )
-            : Text("Vocabulary for ${widget.language}", style: GoogleFonts.poppins()),
+            : Text("Medical Vocabulary", style: GoogleFonts.poppins()),
         leading: IconButton(
           icon: Icon(Icons.arrow_back, color: _isSearchActive ? Colors.black : null),
-          onPressed: () => context.go('/'),
+          onPressed: () => context.go('/language/English'),
         ),
         actions: [
-          if (widget.language == 'English')
-            IconButton(
-              icon: Icon(
-                Icons.medical_services,
-                color: _isSearchActive ? Colors.black : null,
-              ),
-              onPressed: () {
-                context.go('/language/English/medical');
-              },
-              tooltip: 'Medical Vocabulary',
-            ),
-          if (widget.language == 'English')
-            IconButton(
-              icon: Icon(
-                Icons.chat_bubble_outline,
-                color: _isSearchActive ? Colors.black : null,
-              ),
-              onPressed: () {
-                context.go('/language/English/expression');
-              },
-              tooltip: 'Expressions',
-            ),
-          if (widget.language == 'English')
-            IconButton(
-              icon: Icon(
-                Icons.link,
-                color: _isSearchActive ? Colors.black : null,
-              ),
-              onPressed: () {
-                context.go('/language/English/phrasal_verb');
-              },
-              tooltip: 'Phrasal Verbs',
-            ),
           IconButton(
             icon: Icon(
               _isSearchActive ? Icons.close : Icons.search,
@@ -163,68 +121,6 @@ class _LanguageDetailScreenState extends State<LanguageDetailScreen> {
             },
             tooltip: 'Search',
           ),
-          IconButton(
-            icon: Icon(
-              Icons.playlist_add,
-              color: _isSearchActive ? Colors.black : null,
-            ),
-            onPressed: () async {
-              print('Generating 500 test data nodes...');
-              final batch = FirebaseFirestore.instance.batch();
-              for (int i = 1; i <= 500; i++) {
-                final docRef = FirebaseFirestore.instance
-                    .collection('languages')
-                    .doc(widget.language)
-                    .collection(widget.collectionName ?? 'vocabulary')
-                    .doc();
-                batch.set(docRef, {
-                  'word': i.toString(),
-                  'definition': 'Definition for $i',
-                  'connections': [],
-                });
-              }
-              await batch.commit();
-              print('Finished generating 500 test data nodes.');
-            },
-            tooltip: 'Add 500 Test Nodes',
-          ),
-          IconButton(
-            icon: Icon(
-              Icons.delete_sweep,
-              color: _isSearchActive ? Colors.black : null,
-            ),
-            onPressed: () async {
-              print('Deleting test data nodes...');
-              final querySnapshot = await FirebaseFirestore.instance
-                  .collection('languages')
-                  .doc(widget.language)
-                  .collection(widget.collectionName ?? 'vocabulary')
-                  .get();
-
-              final batch = FirebaseFirestore.instance.batch();
-              int deleteCount = 0;
-              for (final doc in querySnapshot.docs) {
-                final data = doc.data();
-                final word = data['word'] as String?;
-                if (word != null && int.tryParse(word) != null) {
-                  batch.delete(doc.reference);
-                  deleteCount++;
-                }
-              }
-
-              await batch.commit();
-              print('Finished deleting $deleteCount test data nodes.');
-            },
-            tooltip: 'Delete Test Nodes',
-          ),
-          IconButton(
-            icon: Icon(
-              Icons.list_alt_outlined,
-              color: _isSearchActive ? Colors.black : null,
-            ),
-            onPressed: () => context.go('/language/${widget.language}/articles'),
-            tooltip: 'View Articles',
-          ),
         ],
       ),
       endDrawer: Drawer(
@@ -233,8 +129,10 @@ class _LanguageDetailScreenState extends State<LanguageDetailScreen> {
       ),
       body: SizedBox.expand(
         child: VocabularyGraphView(
-          language: widget.language,
-          searchQuery: _searchQuery,
+          language: 'English', 
+          searchQuery: _searchQuery, 
+          collectionName: widget.collectionName,
+          isTopLevelCollection: true, // Med_voca는 최상위 컬렉션임을 표시
         ),
       ),
       floatingActionButton: Builder(

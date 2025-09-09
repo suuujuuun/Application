@@ -7,7 +7,15 @@ import 'dart:async';
 class VocabularyGraphView extends StatefulWidget {
   final String language;
   final String searchQuery;
-  const VocabularyGraphView({super.key, required this.language, required this.searchQuery});
+  final String? collectionName; // New parameter
+  final bool isTopLevelCollection; // Med_voca 같은 최상위 컬렉션인지 표시
+  const VocabularyGraphView({
+    super.key, 
+    required this.language, 
+    required this.searchQuery, 
+    this.collectionName,
+    this.isTopLevelCollection = false,
+  }); // Updated constructor
 
   @override
   State<VocabularyGraphView> createState() => VocabularyGraphViewState();
@@ -33,11 +41,42 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
   
   // 로딩 상태 관리
   bool _isFirstLoad = true;
+  
+  // 최적화: 한 번만 로드하고 캐싱
+  List<QueryDocumentSnapshot>? _cachedDocs;
+  StreamSubscription? _streamSubscription;
+  
+  // InteractiveViewer 상태 유지
+  final TransformationController _transformationController = TransformationController();
+  
+  // CustomPainter만 다시 그리기 위한 ValueNotifier
+  final ValueNotifier<int> _repaintNotifier = ValueNotifier<int>(0);
+  
+  // 뷰포트 기반 렌더링을 위한 현재 뷰포트
+  Rect _currentViewport = Rect.zero;
+  
+  // 성능 최적화: 노드 수 제한
+  static const int MAX_VISIBLE_NODES = 200; // 한 번에 보이는 최대 노드 수
+  static const int INITIAL_LOAD_LIMIT = 300; // 초기 로드 제한
+  static const int LOAD_MORE_BATCH = 100; // 추가 로드 배치 크기
+  
+  // 페이지네이션 상태
+  bool _isLoadingMore = false;
+  bool _hasMoreToLoad = true;
+  DocumentSnapshot? _lastDocument;
+  
+  // 초기 카메라 위치 설정 여부
+  bool _initialCameraSet = false;
 
   @override
   void initState() {
     super.initState();
-    _vocabularyCollection = FirebaseFirestore.instance.collection('languages').doc(widget.language).collection('vocabulary');
+    // isTopLevelCollection이 true면 최상위 컬렉션, false면 language 하위 컬렉션
+    if (widget.isTopLevelCollection) {
+      _vocabularyCollection = FirebaseFirestore.instance.collection(widget.collectionName ?? 'Med_voca');
+    } else {
+      _vocabularyCollection = FirebaseFirestore.instance.collection('languages').doc(widget.language).collection(widget.collectionName ?? 'vocabulary');
+    }
     
     // 초기 로드 시에만 물리 시뮬레이션 시작
     Future.delayed(const Duration(milliseconds: 100), () {
@@ -50,8 +89,13 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
   @override
   void didUpdateWidget(VocabularyGraphView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.language != oldWidget.language) {
-      _vocabularyCollection = FirebaseFirestore.instance.collection('languages').doc(widget.language).collection('vocabulary');
+    if (widget.language != oldWidget.language || widget.collectionName != oldWidget.collectionName || widget.isTopLevelCollection != oldWidget.isTopLevelCollection) { // Check all
+      // isTopLevelCollection에 따라 컬렉션 경로 결정
+      if (widget.isTopLevelCollection) {
+        _vocabularyCollection = FirebaseFirestore.instance.collection(widget.collectionName ?? 'Med_voca');
+      } else {
+        _vocabularyCollection = FirebaseFirestore.instance.collection('languages').doc(widget.language).collection(widget.collectionName ?? 'vocabulary');
+      }
       setState(() {
         _selectedNodeId = null;
         _nodes.clear();
@@ -63,16 +107,29 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
   
   @override
   void dispose() {
+    _streamSubscription?.cancel();
     _stopPhysicsSimulation();
+    _transformationController.dispose();
+    _repaintNotifier.dispose();
     super.dispose();
   }
   
-  void _startPhysicsSimulation() {
+  void _startPhysicsSimulation({Duration? runFor}) {
     if (_isPhysicsRunning || _nodes.isEmpty) return;
     
     _isPhysicsRunning = true;
     _lastInteractionTime = DateTime.now();
     _stableFrameCount = 0;
+    
+    // 삭제와 같이 짧은 시간만 실행해야 할 경우, 타이머로 자동 중지
+    if (runFor != null) {
+      Timer(runFor, () {
+        if (mounted && _isPhysicsRunning) {
+          _stopPhysicsSimulation();
+          _hasSignificantChange = false; // 플래그 리셋
+        }
+      });
+    }
     
     // 50ms 주기로 부드러운 애니메이션과 성능의 균형
     _physicsTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
@@ -81,7 +138,8 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
         return;
       }
       _updatePhysics();
-      setState(() {});
+      // setState 제거 - 물리 시뮬레이션은 그냥 돌아가게 둠
+      _repaintNotifier.value++;
     });
   }
   
@@ -96,14 +154,26 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
     
     // 노드 수에 따라 공간 크기 동적 조정
     final nodeCount = _nodes.length;
-    final double boundarySize = (300 + (nodeCount * 30).toDouble()).clamp(300, 1000); // 300~1000 범위로 축소
+    // 대규모 노드를 위한 더 넓은 경계
+    double boundarySize;
+    if (nodeCount <= 100) {
+      boundarySize = 500 + (nodeCount * 20);
+    } else if (nodeCount <= 500) {
+      boundarySize = 2500 + ((nodeCount - 100) * 15);
+    } else if (nodeCount <= 1000) {
+      boundarySize = 8500 + ((nodeCount - 500) * 10);
+    } else {
+      boundarySize = 13500 + ((nodeCount - 1000) * 5);
+    }
+    // 최대 20000으로 제한
+    boundarySize = boundarySize.clamp(500, 20000);
     
     // 노드 수에 따라 물리 파라미터 조정
-    final double springStrength = (0.05 - (nodeCount * 0.0005)).clamp(0.02, 0.05); // 노드가 많을수록 인력 감소
-    final double repulsionStrength = 3000 + (nodeCount * 50).toDouble(); // 노드가 많을수록 척력 증가
-    const double damping = 0.92; // 감쇠 계수
-    const double maxVelocity = 8; // 최대 속도
-    const double centerAttraction = 0.0005; // 중심으로의 약한 인력
+    final double springStrength = (0.04 - (nodeCount * 0.0003)).clamp(0.015, 0.04); // 인력 감소
+    final double repulsionStrength = 2500 + (nodeCount * 30).toDouble(); // 척력 적절히 조정
+    const double damping = 0.88; // 감쇠 계수 조정
+    const double maxVelocity = 6; // 최대 속도 감소
+    const double centerAttraction = 0.0003; // 중심 인력 감소
     
     // 모든 노드에 대해 척력 계산
     for (final node1 in _nodes.values) {
@@ -179,21 +249,19 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
     }
     
     // 운동 에너지 기반 안정화 감지
-    const double energyThreshold = 0.5;
-    const int requiredStableFrames = 60; // 3초간 안정 (50ms * 60)
+    const double energyThreshold = 0.3; // 임계값을 낮춰 더 빨리 안정화
+    const int requiredStableFrames = 10; // 0.5초간 안정 (50ms * 10)
     
     // 시스템이 안정화되면 물리 시뮬레이션 자동 중지
     if (totalKineticEnergy < energyThreshold && _nodes.length > 0) {
       _stableFrameCount++;
       
       if (_stableFrameCount >= requiredStableFrames) {
-        // 5초 후 자동 중지
-        Future.delayed(const Duration(seconds: 5), () {
-          if (mounted && _isPhysicsRunning && !_hasSignificantChange) {
-            _stopPhysicsSimulation();
-            _hasSignificantChange = false;
-          }
-        });
+        // 즉시 중지
+        if (mounted && _isPhysicsRunning && !_hasSignificantChange) {
+          _stopPhysicsSimulation();
+          _hasSignificantChange = false;
+        }
       }
     } else {
       _stableFrameCount = 0;
@@ -203,8 +271,30 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
   }
 
   double get _canvasSize {
-    // Flutter 웹에서 안전한 고정 크기로 설정
-    return 2048.0; // 2048x2048로 줄임 (2^11, 웹 Canvas 안전 크기)
+    // 노드 수에 따라 동적으로 크기 조정
+    final nodeCount = _nodes.length;
+    
+    // 단계별 크기 설정 (2000개까지 안전하게)
+    double dynamicSize;
+    if (nodeCount <= 100) {
+      // 100개까지: 노드당 50px (여유롭게)
+      dynamicSize = 2000 + (nodeCount * 50);
+    } else if (nodeCount <= 500) {
+      // 101-500개: 노드당 35px
+      dynamicSize = 7000 + ((nodeCount - 100) * 35);
+    } else if (nodeCount <= 1000) {
+      // 501-1000개: 노드당 25px
+      dynamicSize = 21000 + ((nodeCount - 500) * 25);
+    } else if (nodeCount <= 2000) {
+      // 1001-2000개: 노드당 15px
+      dynamicSize = 33500 + ((nodeCount - 1000) * 15);
+    } else {
+      // 2000개 초과: 최대값 고정
+      dynamicSize = 48500;
+    }
+    
+    // 최소 2000, 최대 50000 (2000개 노드 기준)
+    return dynamicSize.clamp(2000, 50000);
   }
   
   void _handleCanvasTap(Offset position) {
@@ -232,11 +322,10 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
       }
     }
     
-    // 빈 공간을 클릭하면 선택 해제만 하고 시뮬레이션은 재시작하지 않음
+    // 빈 공간을 클릭하면 선택 해제
     if (!nodeFound && _selectedNodeId != null) {
-      setState(() {
-        _selectedNodeId = null;
-      });
+      _selectedNodeId = null;
+      _repaintNotifier.value++; // 선택 해제 시각화
     }
   }
   
@@ -265,7 +354,20 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
 
   Future<void> _deleteVocabulary(String docId) async {
     final doc = await _vocabularyCollection.doc(docId).get();
-    final connections = List<String>.from((doc.data() as Map<String, dynamic>)['connections'] ?? []);
+    
+    // connections 필드를 안전하게 처리
+    List<String> connections = [];
+    try {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data != null) {
+        final connData = data['connections'];
+        if (connData is List) {
+          connections = connData.map((e) => e.toString()).toList();
+        }
+      }
+    } catch (e) {
+      connections = [];
+    }
 
     final batch = FirebaseFirestore.instance.batch();
 
@@ -278,13 +380,18 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
 
     await batch.commit();
 
-    setState(() {
-      _selectedNodeId = null;
-    });
+    // 로컬 상태에서 노드 직접 제거 (재렌더링 최소화)
+    if (_nodes.containsKey(docId)) {
+      _nodes.remove(docId);
+      // 관련 엣지도 제거
+      _edges.removeWhere((edge) => edge.fromId == docId || edge.toId == docId);
+    }
+    _selectedNodeId = null;
     
-    // 노드 삭제 시 물리 시뮬레이션 재시작
+    // 노드 삭제 시 물리 시뮬레이션을 짧게 실행하여 주변만 재배치
     _hasSignificantChange = true;
-    _startPhysicsSimulation();
+    _startPhysicsSimulation(runFor: const Duration(milliseconds: 500));
+    _repaintNotifier.value++; // 그래프만 다시 그리기
   }
 
   void _showDeleteConfirmationDialog(String word, String docId) {
@@ -304,14 +411,111 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
     );
   }
 
-  void _showNodeInfoDialog(String word, String definition) {
+  void _showNodeInfoDialog(String nodeId, String word, String definition) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: Text(word),
         content: SingleChildScrollView(child: Text(definition)),
         actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              _showEditNodeDialog(nodeId, word, definition);
+            },
+            child: const Text('Edit'),
+          ),
           TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
+  void _showEditNodeDialog(String nodeId, String currentWord, String currentDefinition) {
+    final TextEditingController wordController = TextEditingController(text: currentWord);
+    final TextEditingController definitionController = TextEditingController(text: currentDefinition);
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit Word'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: wordController,
+                decoration: const InputDecoration(
+                  labelText: 'Word',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: definitionController,
+                decoration: const InputDecoration(
+                  labelText: 'Definition',
+                  border: OutlineInputBorder(),
+                  alignLabelWithHint: true,
+                ),
+                maxLines: 5,
+                minLines: 3,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final newWord = wordController.text.trim();
+              final newDefinition = definitionController.text.trim();
+              
+              if (newWord.isNotEmpty && newDefinition.isNotEmpty) {
+                try {
+                  // Update the document in Firestore
+                  await _vocabularyCollection.doc(nodeId).update({
+                    'word': newWord,
+                    'definition': newDefinition,
+                  });
+                  
+                  // Update the local node data
+                  if (_nodes.containsKey(nodeId)) {
+                    // 로컬 상태에서 직접 수정 (재렌더링 최소화)
+                    _nodes[nodeId]!.word = newWord;
+                    _nodes[nodeId]!.definition = newDefinition;
+                    _repaintNotifier.value++; // 노드 텍스트만 업데이트
+                  }
+                  
+                  if (mounted) {
+                    Navigator.of(context).pop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Word updated successfully'),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Error updating word: $e'),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                }
+              }
+            },
+            child: const Text('Save'),
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).primaryColor,
+            ),
+          ),
         ],
       ),
     );
@@ -322,24 +526,35 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
     if (node == null) return;
 
     if (_selectedNodeId == nodeId) {
-      _showNodeInfoDialog(node.word, node.definition);
-      setState(() {
-        _selectedNodeId = null;
-      });
+      _showNodeInfoDialog(nodeId, node.word, node.definition);
+      _selectedNodeId = null;
+      _repaintNotifier.value++; // 선택 해제 시각화
       return;
     }
 
     if (_selectedNodeId == null) {
-      setState(() {
-        _selectedNodeId = nodeId;
-      });
+      _selectedNodeId = nodeId;
+      _repaintNotifier.value++; // 선택 시각화
       return;
     }
 
     // 연결 생성/제거
     final selectedNodeRef = _vocabularyCollection.doc(_selectedNodeId!);
     final doc = await selectedNodeRef.get();
-    final connections = List<String>.from((doc.data() as Map<String, dynamic>)['connections'] ?? []);
+    
+    // connections 필드를 안전하게 처리
+    List<String> connections = [];
+    try {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data != null) {
+        final connData = data['connections'];
+        if (connData is List) {
+          connections = connData.map((e) => e.toString()).toList();
+        }
+      }
+    } catch (e) {
+      connections = [];
+    }
 
     final batch = FirebaseFirestore.instance.batch();
     final tappedNodeRef = _vocabularyCollection.doc(nodeId);
@@ -358,15 +573,31 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
     
     await batch.commit();
     
-    // 연결이 변경되었을 때만 물리 시뮬레이션 재시작
+    // 연결이 변경되었을 때 로컬 엣지 업데이트
     if (connectionChanged) {
+      // 엣지 목록을 로컬에서 직접 업데이트
+      if (connections.contains(nodeId)) {
+        // 연결 제거
+        _edges.removeWhere((edge) => 
+          (edge.fromId == _selectedNodeId && edge.toId == nodeId) ||
+          (edge.fromId == nodeId && edge.toId == _selectedNodeId));
+      } else {
+        // 연결 추가 (중복 방지를 위해 정렬된 순서로)
+        if (_selectedNodeId!.compareTo(nodeId) < 0) {
+          _edges.add(EdgeData(fromId: _selectedNodeId!, toId: nodeId));
+        } else {
+          _edges.add(EdgeData(fromId: nodeId, toId: _selectedNodeId!));
+        }
+      }
+      
+      // 연결 변경 시 물리 시뮬레이션 재시작
       _hasSignificantChange = true;
       _startPhysicsSimulation();
+      _repaintNotifier.value++; // 엣지만 다시 그리기
     }
     
-    setState(() {
-      _selectedNodeId = null;
-    });
+    _selectedNodeId = null;
+    _repaintNotifier.value++; // 선택 해제 시각화
   }
 
   void _updateNodesAndEdges(List<QueryDocumentSnapshot> docs) {
@@ -385,23 +616,34 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
         _nodes[docId]!.word = data['word'] ?? '[No Word]';
         _nodes[docId]!.definition = data['definition'] ?? '[No Definition]';
       } else {
-        // 새 노드 추가 - 랜덤 위치
+        // 새 노드 추가 - 기존 노드들의 평균 위치 근처에 배치
+        double avgX = 0;
+        double avgY = 0;
+        if (_nodes.isNotEmpty) {
+          for (final node in _nodes.values) {
+            avgX += node.x;
+            avgY += node.y;
+          }
+          avgX /= _nodes.length;
+          avgY /= _nodes.length;
+        }
+        
         final random = Random();
-        final nodeCount = _nodes.length;
-        final double spawnRange = (200 + (nodeCount * 10).toDouble()).clamp(200, 600); // 200~600 범위로 축소
+        // 평균 위치 근처에 작은 랜덤 오프셋으로 배치
+        final double offsetRange = 100;
         _nodes[docId] = NodeData(
           id: docId,
           word: data['word'] ?? '[No Word]',
           definition: data['definition'] ?? '[No Definition]',
-          x: random.nextDouble() * spawnRange * 2 - spawnRange,
-          y: random.nextDouble() * spawnRange * 2 - spawnRange,
+          x: avgX + (random.nextDouble() * offsetRange * 2 - offsetRange),
+          y: avgY + (random.nextDouble() * offsetRange * 2 - offsetRange),
           vx: 0,
           vy: 0,
         );
         
-        // 새 노드가 추가되면 중요한 변화로 표시하고 물리 시뮬레이션 재시작
-        _hasSignificantChange = true;
-        _startPhysicsSimulation();
+        // 새 노드가 추가되면 물리 시뮬레이션 재시작하지 않음
+        // _hasSignificantChange = true;
+        // _startPhysicsSimulation();
       }
     }
     
@@ -409,6 +651,13 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
     if (!_isInitialized && _nodes.isNotEmpty) {
       _applyForceDirectedLayout();
       _isInitialized = true;
+      
+      // 초기 로드 시 카메라를 노드 중심부로 이동
+      if (!_initialCameraSet && _nodes.isNotEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _centerCameraOnNodes();
+        });
+      }
     }
     
     // 에지 업데이트
@@ -416,7 +665,23 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
     for (final doc in docs) {
       final data = doc.data() as Map<String, dynamic>;
       final docId = doc.id;
-      final connections = List<String>.from(data['connections'] ?? []);
+      
+      // connections 필드를 더 안전하게 처리
+      List<String> connections = [];
+      try {
+        final connData = data['connections'];
+        if (connData != null) {
+          if (connData is List) {
+            connections = connData.map((e) => e.toString()).toList();
+          } else if (connData is String) {
+            // String인 경우 빈 리스트로 처리
+            connections = [];
+          }
+        }
+      } catch (e) {
+        // 오류 발생 시 빈 리스트
+        connections = [];
+      }
       
       for (final connectedId in connections) {
         if (_nodes.containsKey(connectedId) && docId.compareTo(connectedId) < 0) {
@@ -434,12 +699,99 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
       node.vy = 0;
     }
   }
+  
+  void _centerCameraOnNodes() {
+    if (_nodes.isEmpty || _initialCameraSet) return;
+    
+    // 모든 노드의 중심점 계산
+    double minX = double.infinity;
+    double maxX = double.negativeInfinity;
+    double minY = double.infinity;
+    double maxY = double.negativeInfinity;
+    
+    for (final node in _nodes.values) {
+      minX = min(minX, node.x);
+      maxX = max(maxX, node.x);
+      minY = min(minY, node.y);
+      maxY = max(maxY, node.y);
+    }
+    
+    // 노드들의 중심점 계산
+    final centerX = (minX + maxX) / 2;
+    final centerY = (minY + maxY) / 2;
+    
+    // 캔버스의 중심점 계산
+    final canvasSize = _canvasSize;
+    final canvasCenterX = canvasSize / 2;
+    final canvasCenterY = canvasSize / 2;
+    
+    // 노드 중심점이 화면 중앙에 오도록 변환 행렬 계산
+    final translateX = canvasCenterX - (centerX + canvasCenterX);
+    final translateY = canvasCenterY - (centerY + canvasCenterY);
+    
+    // 노드들의 범위에 따라 적절한 스케일 계산
+    final nodesWidth = maxX - minX;
+    final nodesHeight = maxY - minY;
+    final maxDimension = max(nodesWidth, nodesHeight);
+    
+    // 화면 크기를 고려한 적절한 스케일 계산 (여백 포함)
+    double scale = 1.0;
+    if (maxDimension > 0) {
+      final viewportSize = min(MediaQuery.of(context).size.width, MediaQuery.of(context).size.height) * 0.8;
+      scale = (viewportSize / maxDimension).clamp(0.1, 2.0);
+    }
+    
+    // 변환 행렬 적용
+    final matrix = Matrix4.identity()
+      ..translate(translateX, translateY)
+      ..scale(scale);
+    
+    _transformationController.value = matrix;
+    _initialCameraSet = true;
+  }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot>(
-      stream: _vocabularyCollection.snapshots(),
-      builder: (context, snapshot) {
+    // 편집 모드나 연결 작업 중일 때만 실시간 업데이트 사용
+    final bool useRealtimeUpdates = _selectedNodeId != null || _nodes.isEmpty;
+    
+    if (useRealtimeUpdates) {
+      // 실시간 업데이트가 필요한 경우
+      return StreamBuilder<QuerySnapshot>(
+        stream: _vocabularyCollection
+            .limit(INITIAL_LOAD_LIMIT)  // 초기 로드 제한
+            .snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.hasData) {
+            _cachedDocs = snapshot.data!.docs;
+          }
+          return _buildGraphWidget(context, snapshot);
+        },
+      );
+    } else {
+      // 일반 보기 모드: 캐시된 데이터 사용 또는 한 번만 로드
+      if (_cachedDocs != null) {
+        // 캐시된 데이터가 있으면 바로 렌더링
+        _updateNodesAndEdges(_cachedDocs!);
+        return _buildGraphFromCache();
+      } else {
+        // 처음 로드할 때 FutureBuilder 사용
+        return FutureBuilder<QuerySnapshot>(
+          future: _vocabularyCollection
+              .limit(INITIAL_LOAD_LIMIT)  // 초기 로드 제한
+              .get(),
+          builder: (context, snapshot) {
+            if (snapshot.hasData) {
+              _cachedDocs = snapshot.data!.docs;
+            }
+            return _buildGraphWidget(context, snapshot);
+          },
+        );
+      }
+    }
+  }
+  
+  Widget _buildGraphWidget(BuildContext context, AsyncSnapshot<QuerySnapshot> snapshot) {
         // 연결 상태 확인
         if (snapshot.connectionState == ConnectionState.waiting && _isFirstLoad) {
           return Center(
@@ -540,37 +892,89 @@ class VocabularyGraphViewState extends State<VocabularyGraphView> {
         
         return LayoutBuilder(
           builder: (context, constraints) {
-            // 제약 조건 확인 및 안전한 크기 설정
-            final safeSize = _canvasSize.clamp(100.0, 2048.0);
+            // 캔버스 크기 안전 확인
+            final canvasSize = _canvasSize;
+            final safeSize = canvasSize.clamp(1000.0, 50000.0);  // 최대 50000까지 허용
             
             return InteractiveViewer(
+              transformationController: _transformationController,
               constrained: false,
               boundaryMargin: const EdgeInsets.all(100),
-              minScale: 0.1,
-              maxScale: 3.0,
-              child: SizedBox(
-                width: safeSize,
-                height: safeSize,
-                child: GestureDetector(
-                  onTapDown: (details) {
-                    _handleCanvasTap(details.localPosition);
-                  },
-                  onLongPressStart: (details) {
-                    _handleCanvasLongPress(details.localPosition);
-                  },
-                  child: CustomPaint(
-                    size: Size(safeSize, safeSize),
-                    painter: GraphPainter(
-                      nodes: _nodes,
-                      edges: _edges,
-                      selectedNodeId: _selectedNodeId,
-                      searchQuery: widget.searchQuery,
+              minScale: 0.05,  // 더 많이 축소 가능
+              maxScale: 5.0,    // 더 많이 확대 가능
+              child: RepaintBoundary(  // 성능 최적화
+                child: SizedBox(
+                  width: safeSize,
+                  height: safeSize,
+                  child: GestureDetector(
+                    onTapDown: (details) {
+                      _handleCanvasTap(details.localPosition);
+                    },
+                    onLongPressStart: (details) {
+                      _handleCanvasLongPress(details.localPosition);
+                    },
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: _repaintNotifier,
+                      builder: (context, value, child) {
+                        return CustomPaint(
+                          size: Size(safeSize, safeSize),
+                          painter: GraphPainter(
+                            nodes: _nodes,
+                            edges: _edges,
+                            selectedNodeId: _selectedNodeId,
+                            searchQuery: widget.searchQuery,
+                          ),
+                        );
+                      },
                     ),
                   ),
                 ),
               ),
             );
           },
+        );
+  }
+  
+  Widget _buildGraphFromCache() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final canvasSize = _canvasSize;
+        final safeSize = canvasSize.clamp(1000.0, 50000.0);  // 최대 50000까지 허용
+        
+        return InteractiveViewer(
+          transformationController: _transformationController,
+          constrained: false,
+          boundaryMargin: const EdgeInsets.all(100),
+          minScale: 0.05,
+          maxScale: 5.0,
+          child: RepaintBoundary(
+            child: SizedBox(
+              width: safeSize,
+              height: safeSize,
+              child: GestureDetector(
+                onTapDown: (details) {
+                  _handleCanvasTap(details.localPosition);
+                },
+                onLongPressStart: (details) {
+                  _handleCanvasLongPress(details.localPosition);
+                },
+                child: ValueListenableBuilder<int>(
+                  valueListenable: _repaintNotifier,
+                  builder: (context, value, child) {
+                    return CustomPaint(
+                      size: Size(safeSize, safeSize),
+                      painter: GraphPainter(
+                        nodes: _nodes,
+                        edges: _edges,
+                        selectedNodeId: _selectedNodeId,
+                        searchQuery: widget.searchQuery,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
         );
       },
     );
