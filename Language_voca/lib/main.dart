@@ -9,6 +9,8 @@ import 'language_detail_screen.dart';
 import 'medical_vocabulary_screen.dart';
 import 'expression_screen.dart'; // New import
 import 'phrasal_verb_screen.dart'; // New import
+import 'science_vocabulary_screen.dart'; // New import
+import 'professional_vocabulary_screen.dart'; // New import
 import 'screens/article_list_screen.dart';
 import 'screens/article_detail_screen.dart';
 import 'screens/add_article_screen.dart';
@@ -96,6 +98,30 @@ final GoRouter _router = GoRouter(
                   return LanguageDetailScreen(language: language);
                 }
                 return const PhrasalVerbScreen(collectionName: 'phrasal_verb');
+              },
+            ),
+            // Science Vocabulary Screen under language route
+            GoRoute(
+              path: 'science_vocabulary',
+              builder: (BuildContext context, GoRouterState state) {
+                final String language = state.pathParameters['lang']!;
+                // Only available for English
+                if (language != 'English') {
+                  return LanguageDetailScreen(language: language);
+                }
+                return const ScienceVocabularyScreen(collectionName: 'science_vocabulary');
+              },
+            ),
+            // Professional Vocabulary Screen under language route
+            GoRoute(
+              path: 'professional_vocabulary',
+              builder: (BuildContext context, GoRouterState state) {
+                final String language = state.pathParameters['lang']!;
+                // Only available for English
+                if (language != 'English') {
+                  return LanguageDetailScreen(language: language);
+                }
+                return const ProfessionalVocabularyScreen(collectionName: 'professional_vocabulary');
               },
             ),
           ],

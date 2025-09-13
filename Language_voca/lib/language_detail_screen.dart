@@ -148,6 +148,28 @@ class _LanguageDetailScreenState extends State<LanguageDetailScreen> {
               },
               tooltip: 'Phrasal Verbs',
             ),
+          if (widget.language == 'English')
+            IconButton(
+              icon: Icon(
+                Icons.science,
+                color: _isSearchActive ? Colors.black : null,
+              ),
+              onPressed: () {
+                context.go('/language/English/science_vocabulary');
+              },
+              tooltip: 'Science Vocabulary',
+            ),
+          if (widget.language == 'English')
+            IconButton(
+              icon: Icon(
+                Icons.business,
+                color: _isSearchActive ? Colors.black : null,
+              ),
+              onPressed: () {
+                context.go('/language/English/professional_vocabulary');
+              },
+              tooltip: 'Professional Vocabulary',
+            ),
           IconButton(
             icon: Icon(
               _isSearchActive ? Icons.close : Icons.search,
