@@ -187,60 +187,6 @@ class _LanguageDetailScreenState extends State<LanguageDetailScreen> {
           ),
           IconButton(
             icon: Icon(
-              Icons.playlist_add,
-              color: _isSearchActive ? Colors.black : null,
-            ),
-            onPressed: () async {
-              print('Generating 500 test data nodes...');
-              final batch = FirebaseFirestore.instance.batch();
-              for (int i = 1; i <= 500; i++) {
-                final docRef = FirebaseFirestore.instance
-                    .collection('languages')
-                    .doc(widget.language)
-                    .collection(widget.collectionName ?? 'vocabulary')
-                    .doc();
-                batch.set(docRef, {
-                  'word': i.toString(),
-                  'definition': 'Definition for $i',
-                  'connections': [],
-                });
-              }
-              await batch.commit();
-              print('Finished generating 500 test data nodes.');
-            },
-            tooltip: 'Add 500 Test Nodes',
-          ),
-          IconButton(
-            icon: Icon(
-              Icons.delete_sweep,
-              color: _isSearchActive ? Colors.black : null,
-            ),
-            onPressed: () async {
-              print('Deleting test data nodes...');
-              final querySnapshot = await FirebaseFirestore.instance
-                  .collection('languages')
-                  .doc(widget.language)
-                  .collection(widget.collectionName ?? 'vocabulary')
-                  .get();
-
-              final batch = FirebaseFirestore.instance.batch();
-              int deleteCount = 0;
-              for (final doc in querySnapshot.docs) {
-                final data = doc.data();
-                final word = data['word'] as String?;
-                if (word != null && int.tryParse(word) != null) {
-                  batch.delete(doc.reference);
-                  deleteCount++;
-                }
-              }
-
-              await batch.commit();
-              print('Finished deleting $deleteCount test data nodes.');
-            },
-            tooltip: 'Delete Test Nodes',
-          ),
-          IconButton(
-            icon: Icon(
               Icons.list_alt_outlined,
               color: _isSearchActive ? Colors.black : null,
             ),
